@@ -15,13 +15,15 @@ import {MeshBVH, MeshBVHVisualizer} from 'three-mesh-bvh';
 import Modal from '../components/Modal';
 import {Actions} from '../reducers/AppReducer';
 
-const Stage1 = ({isSoundOn}) => {
+const Stage1 = ({isSoundOn, setIsSoundOn}) => {
   const mountRef = useRef(null);
   const [isModal, setIsModal] = useState(false);
   const [openCheckpoint, setOpenCheckpoint] = useState({});
-  const [music, setMusic] = useState('./Nature.mp3');
   const {state: appState} = useContext(AppStateContext);
   const {dispatch: appDispatch} = useContext(AppDispatchContext);
+  const [renderer, setRenderer] = useState(
+    new THREE.WebGLRenderer({antialias: true})
+  );
 
   let checkpoints = [
     {
@@ -50,16 +52,19 @@ const Stage1 = ({isSoundOn}) => {
     reset: reset,
   };
 
-  let renderer,
-    camera,
+  let camera,
     scene,
     clock,
     gui,
     stats,
+    envSound,
     playerPositionClone,
+    stairsBackup,
     cubeA,
     cubeB,
-    cubeC;
+    cubeC,
+    geometries,
+    mergedGeometry;
   let isMuted = false;
   let environment, collider, visualizer, player, controls, stairs;
   const geometry = new THREE.BoxGeometry(1, 1, 1);
@@ -73,11 +78,227 @@ const Stage1 = ({isSoundOn}) => {
   let songElement;
   const navigate = useNavigate();
 
-  function init() {
+  function loadColliderEnvironment() {
+    new GLTFLoader().load('./stages/EA_Scene_v2.glb', (res) => {
+      environment = res.scene;
+      environment.scale.setScalar(1.5);
+
+      const pointLight = new THREE.PointLight(0xffffff);
+      pointLight.distance = 8;
+      pointLight.position.set(0, 50, 0);
+      environment.add(pointLight);
+
+      const porchLight = new THREE.PointLight(0xffffff);
+      porchLight.distance = 15;
+      porchLight.intensity = 5;
+      porchLight.position.set(0, 100, 135);
+      porchLight.shadow.normalBias = 1e-2;
+      porchLight.shadow.bias = -1e-3;
+      porchLight.shadow.mapSize.setScalar(1024);
+      porchLight.castShadow = true;
+
+      environment.add(porchLight);
+
+      // collect all geometries to merge
+      geometries = [];
+      environment.updateMatrixWorld(true);
+      environment.traverse((c) => {
+        if (c.geometry) {
+          const cloned = c.geometry.clone();
+          cloned.applyMatrix4(c.matrixWorld);
+          for (const key in cloned.attributes) {
+            if (key !== 'position') {
+              cloned.deleteAttribute(key);
+            }
+          }
+          if (c.userData.name === '1_E_Stairs') {
+            stairs = c;
+            stairsBackup = cloned;
+            stairsBackup.userData = 'stairs';
+            console.log(c, stairsBackup);
+          }
+          geometries.push(cloned);
+        }
+      });
+
+      stairs.geometry = undefined;
+      // create the merged geometry
+      mergedGeometry = BufferGeometryUtils.mergeBufferGeometries(
+        geometries,
+        false
+      );
+      mergedGeometry.boundsTree = new MeshBVH(mergedGeometry);
+      collider = new THREE.Mesh(mergedGeometry);
+      collider.material.wireframe = true;
+      collider.material.opacity = 0.5;
+      collider.material.transparent = true;
+      visualizer = new MeshBVHVisualizer(collider, params.visualizeDepth);
+
+      // environment.remove(stairs);
+      stairs.geometry = undefined;
+      stairs.visible = false;
+      collider.remove(stairs);
+      scene.add(visualizer);
+      scene.add(collider);
+      scene.add(environment);
+
+      environment.traverse((c) => {
+        if (c.material) {
+          c.castShadow = true;
+          c.receiveShadow = true;
+          c.material.shadowSide = 2;
+        }
+      });
+    });
+  }
+
+  function reset() {
+    appState.player.velocity.set(0, 0, 0);
+    appState.player.position.set(-38, 15, -10);
+    appState.camera.position.sub(controls.target);
+    controls.target.copy(appState.player.position);
+    appState.camera.position.add(appState.player.position);
+    appDispatch(Actions.UPDATE_CAMERA, appState.camera);
+    appDispatch(Actions.UPDATE_PLAYER, appState.player);
+    controls.update();
+  }
+
+  //modal logic
+  async function showModal(checkpoint) {
+    if (isModal) return;
+    if (!checkpoint) return;
+    setIsModal(true);
+    setOpenCheckpoint(checkpoint);
+  }
+
+  function hideModal() {
+    setOpenCheckpoint({});
+    setIsModal(false);
+  }
+
+  function updatePlayer(delta, isSound) {
+    playerPositionClone = appState.player.getPosition();
+    if (playerPositionClone.y === 4) {
+      // if (!envSound.playing()) return;
+      envSound.play();
+      console.log(appState);
+      // console.log(isSound);
+    } else {
+      Howler.volume(0.0);
+    }
+
+    // if (playerPositionClone.y <= 3.5) {
+    //   // setIsSoundOn(true);
+    //   // console.log("Inside sound!");
+    // } else if (isSound) {
+    //   console.log(isSound);
+    //   // console.log("Away from sound!");
+    // }
+
+    if (equal(playerPositionClone, {x: -46, y: 2, z: -19})) {
+      const currentCheckpoint = checkpoints.find(
+        (checkpoint) => checkpoint.number === 1
+      );
+      if (currentCheckpoint) {
+        showModal(currentCheckpoint);
+        checkpoints = checkpoints.filter(
+          (checkpoint) => checkpoint.number !== 1
+        );
+        cubeA.material = new THREE.MeshBasicMaterial({color: 'red'});
+        // stairs.visible = true;
+        // geometries.push(stairsBackup);
+        console.log(checkpoints);
+        // create the merged geometry
+        // stairsBackup = BufferGeometryUtils.mergeBufferGeometries(
+        //   geometries,
+        //   false
+        // );
+        appDispatch(Actions.UPDATE_CHECKPOINTS, currentCheckpoint);
+        // stairsBackup.boundsTree = new MeshBVH(mergedGeometry);
+        // collider = new THREE.Mesh(mergedGeometry);
+        // mergedGeometry.mergeBufferGeometries(stairsBackup);
+
+        // collider.add(stairsBackup);
+        // environment.add(stairsBackup);
+        // scene.add(environment);
+        // scene.add(stairsBackup);
+      }
+    }
+
+    // if (equal(playerPositionClone, { x: 20, y: 7, z: -4 })) {
+    //   const currentCheckpoint = checkpoints.find(
+    //     (checkpoint) => checkpoint.number === 1
+    //   );
+    //   showModal(currentCheckpoint);
+    //   checkpoints = checkpoints.filter((checkpoint) => checkpoint.number !== 1);
+    //   cubeC.material = new THREE.MeshBasicMaterial({ color: 'red' });
+    // }
+
+    // move the player
+    const angle = controls.getAzimuthalAngle();
+
+    appState.player.movePlayer(delta, angle, collider, params.gravity);
+
+    // adjust the camera
+    appState.camera.position.sub(controls.target);
+    controls.target.copy(appState.player.position);
+    appState.camera.position.add(appState.player.position);
+    appDispatch(Actions.UPDATE_CAMERA, appState.camera);
+    appDispatch(Actions.UPDATE_PLAYER, appState.player);
+
+    // if the player has fallen too far below the level reset their position to the start
+    if (appState.player.position.y < -25) {
+      reset();
+    }
+  }
+
+  function navigateTo(url) {
+    appState.gui.close();
+    navigate(url);
+  }
+
+  function render(isSound) {
+    stats.update();
+    requestAnimationFrame(() => render(isSoundOn));
+
+    const delta = Math.min(clock.getDelta(), 0.1);
+    if (params.firstPerson) {
+      controls.maxPolarAngle = Math.PI;
+      controls.minDistance = 1e-4;
+      controls.maxDistance = 1e-4;
+    } else {
+      controls.maxPolarAngle = Math.PI / 2;
+      controls.minDistance = 1;
+      controls.maxDistance = 20;
+    }
+
+    if (collider) {
+      collider.visible = params.displayCollider;
+      visualizer.visible = params.displayBVH;
+
+      const physicsSteps = params.physicsSteps;
+      for (let i = 0; i < physicsSteps; i++) {
+        updatePlayer(delta / physicsSteps, isSound);
+      }
+    }
+
+    controls.update();
+
+    renderer.render(scene, appState.camera);
+  }
+
+  // const startAudio = (musicFile) => {
+  //   isSoundOn = true;
+  //   console.log(isSoundOn);
+
+  // };
+  useEffect(() => {
+    // if the state has not loaded yet, then suspend
+    if (!appState) return;
     const bgColor = 0x263238;
 
     // renderer setup
-    renderer = new THREE.WebGLRenderer({antialias: true});
+    // renderer = new THREE.WebGLRenderer({antialias: true});
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setClearColor(bgColor, 1);
@@ -85,6 +306,7 @@ const Stage1 = ({isSoundOn}) => {
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.outputEncoding = THREE.sRGBEncoding;
     mountRef.current.appendChild(renderer.domElement);
+    setRenderer(renderer);
 
     // scene setup
     scene = new THREE.Scene();
@@ -143,7 +365,7 @@ const Stage1 = ({isSoundOn}) => {
     //   sound.play();
     // });
     // Setup the new Howl.
-    const envSound = new Howl({
+    envSound = new Howl({
       src: ['./Nature.mp3'],
     });
     envSound.loop(true);
@@ -213,217 +435,27 @@ const Stage1 = ({isSoundOn}) => {
     );
 
     appState.player.registerEvents();
-  }
-
-  function loadColliderEnvironment() {
-    new GLTFLoader().load('./stages/EA_AllLetters_v6.glb', (res) => {
-      environment = res.scene;
-      environment.scale.setScalar(1.5);
-
-      const pointLight = new THREE.PointLight(0xffffff);
-      pointLight.distance = 8;
-      pointLight.position.set(0, 50, 0);
-      environment.add(pointLight);
-
-      const porchLight = new THREE.PointLight(0xffffff);
-      porchLight.distance = 15;
-      porchLight.intensity = 5;
-      porchLight.position.set(0, 100, 135);
-      porchLight.shadow.normalBias = 1e-2;
-      porchLight.shadow.bias = -1e-3;
-      porchLight.shadow.mapSize.setScalar(1024);
-      porchLight.castShadow = true;
-
-      environment.add(porchLight);
-
-      // collect all geometries to merge
-      const geometries = [];
-      environment.updateMatrixWorld(true);
-      environment.traverse((c) => {
-        if (c.geometry) {
-          const cloned = c.geometry.clone();
-          cloned.applyMatrix4(c.matrixWorld);
-          for (const key in cloned.attributes) {
-            if (key !== 'position') {
-              cloned.deleteAttribute(key);
-            }
-          }
-
-          geometries.push(cloned);
-        }
-      });
-
-      // create the merged geometry
-      const mergedGeometry = BufferGeometryUtils.mergeBufferGeometries(
-        geometries,
-        false
-      );
-      mergedGeometry.boundsTree = new MeshBVH(mergedGeometry);
-
-      collider = new THREE.Mesh(mergedGeometry);
-      collider.material.wireframe = true;
-      collider.material.opacity = 0.5;
-      collider.material.transparent = true;
-
-      visualizer = new MeshBVHVisualizer(collider, params.visualizeDepth);
-      scene.add(visualizer);
-      scene.add(collider);
-      scene.add(environment);
-
-      environment.traverse((c) => {
-        // console.log(c.userData);
-        if (c.material) {
-          c.castShadow = true;
-          c.receiveShadow = true;
-          c.material.shadowSide = 2;
-        }
-        if (c.userData.name === 'LP_Stairs') {
-          stairs = c;
-          stairs.visible = true;
-        }
-      });
-    });
-  }
-
-  function reset() {
-    appState.player.velocity.set(0, 0, 0);
-    appState.player.position.set(-38, 15, -10);
-    appState.camera.position.sub(controls.target);
-    controls.target.copy(appState.player.position);
-    appState.camera.position.add(appState.player.position);
-    appDispatch(Actions.UPDATE_CAMERA, appState.camera);
-    appDispatch(Actions.UPDATE_PLAYER, appState.player);
-    controls.update();
-  }
-
-  //modal logic
-  async function showModal(checkpoint) {
-    if (isModal) return;
-    if (!checkpoint) return;
-    setIsModal(true);
-    setOpenCheckpoint(checkpoint);
-  }
-
-  function hideModal() {
-    setOpenCheckpoint({});
-    setIsModal(false);
-  }
-
-  function updatePlayer(delta, isSoundOn) {
-    playerPositionClone = appState.player.getPosition();
-
-    if (playerPositionClone.y <= 3.5) {
-      console.log(isSoundOn);
-      Howler.volume(0.0);
-    } else if (isSoundOn) {
-      Howler.volume(1.0);
-    }
-
-    if (equal(playerPositionClone, {x: -46, y: 2, z: -19})) {
-      const currentCheckpoint = checkpoints.find(
-        (checkpoint) => checkpoint.number === 1
-      );
-      if (currentCheckpoint) {
-        showModal(currentCheckpoint);
-        checkpoints = checkpoints.filter(
-          (checkpoint) => checkpoint.number !== 1
-        );
-        cubeA.material = new THREE.MeshBasicMaterial({color: 'red'});
-        stairs.visible = true;
-      }
-    }
-
-    // if (equal(playerPositionClone, { x: 20, y: 7, z: -4 })) {
-    //   const currentCheckpoint = checkpoints.find(
-    //     (checkpoint) => checkpoint.number === 1
-    //   );
-    //   showModal(currentCheckpoint);
-    //   checkpoints = checkpoints.filter((checkpoint) => checkpoint.number !== 1);
-    //   cubeC.material = new THREE.MeshBasicMaterial({ color: 'red' });
-    // }
-
-    // move the player
-    const angle = controls.getAzimuthalAngle();
-
-    appState.player.movePlayer(delta, angle, collider, params.gravity);
-
-    // adjust the camera
-    appState.camera.position.sub(controls.target);
-    controls.target.copy(appState.player.position);
-    appState.camera.position.add(appState.player.position);
-    appDispatch(Actions.UPDATE_CAMERA, appState.camera);
-    appDispatch(Actions.UPDATE_PLAYER, appState.player);
-
-    // if the player has fallen too far below the level reset their position to the start
-    if (appState.player.position.y < -25) {
-      reset();
-    }
-  }
-
-  function navigateTo(url) {
-    appState.gui.close();
-    navigate(url);
-  }
-
-  function render(isSound) {
-    stats.update();
-    requestAnimationFrame(() => render(isSound));
-
-    const delta = Math.min(clock.getDelta(), 0.1);
-    if (params.firstPerson) {
-      controls.maxPolarAngle = Math.PI;
-      controls.minDistance = 1e-4;
-      controls.maxDistance = 1e-4;
-    } else {
-      controls.maxPolarAngle = Math.PI / 2;
-      controls.minDistance = 1;
-      controls.maxDistance = 20;
-    }
-
-    if (collider) {
-      collider.visible = params.displayCollider;
-      visualizer.visible = params.displayBVH;
-
-      const physicsSteps = params.physicsSteps;
-      for (let i = 0; i < physicsSteps; i++) {
-        updatePlayer(delta / physicsSteps, isSoundOn);
-      }
-    }
-
-    controls.update();
-
-    renderer.render(scene, appState.camera);
-  }
-
-  // const startAudio = (musicFile) => {
-  //   isSoundOn = true;
-  //   console.log(isSoundOn);
-
-  // };
-  useEffect(() => {
-    // if the state has not loaded yet, then suspend
-    if (!appState) return;
-    console.log(appState.player.position);
-    init();
-    render(isSoundOn);
   }, []);
 
   useEffect(() => {
     if (!isSoundOn) {
-      isMuted = true;
       Array.from(document.querySelectorAll('audio, video')).forEach(
         (el) => (el.muted = true)
       );
       // sound.pause();
       Howler.volume(0.0);
+      console.log(appState);
     } else {
-      isMuted = true;
       Howler.volume(1.0);
       Array.from(document.querySelectorAll('audio, video')).forEach(
         (el) => (el.muted = false)
       );
     }
   }, [isSoundOn]);
+
+  useEffect(() => {
+    render(isSoundOn);
+  }, [renderer]);
 
   return (
     <React.Fragment>
@@ -435,10 +467,22 @@ const Stage1 = ({isSoundOn}) => {
           Close
         </button>
       </Modal>
+      <button
+        className='bg-blue-500 hover:bg-blue-400 absolute text-white font-bold py-2 px-4 border-b-4 border-blue-700 hover:border-blue-500 rounded m-6'
+        onClick={() => appDispatch(Actions.UPDATE_SOUND, false)}
+      >
+        Sound is {isSoundOn ? 'On' : 'Off'}
+      </button>
+      <div
+        className='bg-blue-500 hover:bg-blue-400 absolute text-white font-bold py-2 px-4 border-b-4 border-blue-700 hover:border-blue-500 rounded m-24'
+        onClick={() => console.log(appState.checkpoints)}
+      >
+        {checkpoints.length}
+      </div>
       <div className='App h-full overflow-hidden'>
         <div ref={mountRef}></div>
       </div>
-      <audio id='ambient' preload='auto' className='hidden'>
+      <audio id='ambient' loop preload='auto' className='hidden'>
         <source src='./Nature.mp3' type='audio/mpeg' />
       </audio>
       <audio loop id='e-room' preload='auto' className='hidden'>

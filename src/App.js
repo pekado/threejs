@@ -20,16 +20,21 @@ export default function App() {
     <React.Fragment>
       <AppProvider>
         {!user.username && <Form setUser={setUser} />}
-        <button
-          className='bg-blue-500 hover:bg-blue-400 text-white font-bold py-2 px-4 border-b-4 border-blue-700 hover:border-blue-500 absolute rounded m-6'
-          onClick={() => setIsSoundOn(!isSoundOn)}
-        >
-          Sound is {isSoundOn ? 'On' : 'Off'}
-        </button>
+      
         <BrowserRouter>
           <Routes>
-            <Route path='' element={<Home />} />
-            <Route path='stage1' element={<Stage1 isSoundOn={isSoundOn} />} />
+            <Route
+              path=''
+              element={
+                <Home setIsSoundOn={setIsSoundOn} isSoundOn={isSoundOn} />
+              }
+            />
+            <Route
+              path='stage1'
+              element={
+                <Stage1 setIsSoundOn={setIsSoundOn} isSoundOn={isSoundOn} />
+              }
+            />
             <Route path='stage2' element={<Stage2 />} />
           </Routes>
         </BrowserRouter>
